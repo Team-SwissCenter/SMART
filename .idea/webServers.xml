@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="7b3f3f76-d082-4ccd-b9dc-bde385220e4b" name="mail01">
+        <fileTransfer rootFolder="/C:/EvenSmarterTools" accessType="SFTP" host="192.168.60.100" port="22" sshConfigId="ea47c464-e421-4e37-bc7f-8e7ec025eeac" sshConfig="Administrator@192.168.60.100:22 key" keyPair="true">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
