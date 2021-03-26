@@ -7,32 +7,20 @@ from os import path
 import shutil
 import json
 import base64
-from loguru import logger
 import smarterlib
-
+from alive_progress import alive_bar
 
 #
-# Global default settings
+# Global default settings and variables
 #
-debug_enabled = False
-colorless = False
-
-
-def init_logger():
-    if debug_enabled:
-        log_level = "DEBUG"
-    else:
-        log_level = "INFO"
-    logger.stop()
-    logger.start(
-        sys.stderr,
-        colorize=not colorless,
-        format='<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>',
-        level=log_level
-    )
+infos = {}
+sm_domains_settings = {}
+sm_domains_accounts = {}
+logger = None
 
 
 def load_config(config_file):
+    global logger
     # Config file exists ?
     if not path.isfile(config_file):
         logger.error('Config file %s not found.' % config_file)
@@ -76,39 +64,47 @@ def load_config(config_file):
 
 
 def sanity_check(config):
+    global logger
+    global infos
+
     # Check if given SmarterMail install dir existing
     sm_root = config['general']['sm_install_dir']
     if not path.isdir(sm_root):
         logger.error('SmarterMail installation directory %s not found' % sm_root)
         sys.exit(0)
 
-    # Check if SmarterMail executable is present
+    # Executable
     sm_executable = path.join(sm_root, 'Service', 'MailService.exe')
     if not path.isfile(sm_executable):
         logger.error('SmarterMail service executable %s not present' % sm_executable)
+        sys.exit(0)
 
-    # Check if SmarterMail settings is present and valid
-    sm_setting_json = path.join(sm_root, 'Service', 'MailService.exe')
-    if not path.isfile(sm_executable):
-        logger.error('SmarterMail service executable %s not present' % sm_executable)
+    # Check SmarterMail version
+    v = smarterlib.get_executable_version(sm_executable)
+    if not v:
+        logger.error('Could not determine installed SmarterMail version')
+        sys.exit(0)
+
+    # Populate version information for later use
+    infos['sm_version'] = ".". join([str(i) for i in v])
+    infos['sm_major'] = v[0]
+    infos['sm_build'] = v[2]
+
+    if infos['sm_major'] < 100:
+        logger.error('Sorry, we only support SmarterMail from v100 (aka v17, aka "not-versionned-anymore"')
+        sys.exit(0)
+
+    logger.debug('Detected supported SmarterMail version %s' % infos['sm_version'])
+
+    return True
 
 
-    # Check if SmarterMail domains config is present and valid
 #
 # Main
 #
 def main():
-    global debug_enabled, colorless
-
-    # Configure logging
-    init_logger()
-
-    # Load config
-    config = load_config(path.join(path.dirname(path.realpath(__file__)), 'sm.ini'))
-
-    # Check if we're good to go
-    sanity_check(config)
-
+    global logger
+    global infos
     #
     # Command-line parser logic
     #
@@ -133,12 +129,8 @@ def main():
     rebuild_parser.add_argument('--folder', help='Folder to rebuild (i.e. "Inbox" or "all")', required=True)
     args = parser.parse_args()
 
-    # Initialize arguments variables
-    debug_enabled, colorless, action = None, None, None
-
-    # Bind global args
-    debug_enabled = args.d
-    colorless = args.c
+    # Configure logging
+    logger = smarterlib.init_logger(args.d, args.c)
 
     # Check selection action
     action = args.which
@@ -152,6 +144,75 @@ def main():
         folder = args.folder
     if 'check' in action:
         fix = args.fix
+
+    # Load config
+    config = load_config(path.join(path.dirname(path.realpath(__file__)), 'sm.ini'))
+
+    # Check if we're good to go
+    sanity_check(config)
+
+    # Load settings
+    sm_root = config['general']['sm_install_dir']
+    sm_settings_file = path.join(sm_root, 'Service', 'Settings', 'settings.json')
+    if not path.isfile(sm_settings_file):
+        logger.error('Global settings json file %s not present' % sm_settings_file)
+        sys.exit(0)
+    sm_settings = smarterlib.load_json(sm_settings_file)
+    if not sm_settings:
+        logger.error('Global settings json file is not parsable. A recovery could be attempted with --fix')
+
+    # domains.json
+    sm_domains_file = path.join(sm_root, 'Service', 'Settings', 'domains.json')
+    if not path.isfile(sm_domains_file):
+        logger.error('Global domains definition json file %s not present' % sm_domains_file)
+        sys.exit(0)
+    domains_json = smarterlib.load_json(sm_domains_file)
+    sm_domains = domains_json['domains']
+    sm_domains_aliases = domains_json['domain_aliases']
+    if not sm_domains:
+        logger.error('Global domains definition json file is not parsable. A recovery could be attempted with --fix')
+
+    #
+    # Actions
+    #
+    if 'check' in action:
+        #
+        # Check domains for errors
+        #
+        logger.info('Loaded %d domains and %d domain aliases' % (len(sm_domains), len(sm_domains_aliases)))
+        logger.info('Checking domains data path, settings and accounts definitions')
+        with alive_bar(
+                len(sm_domains),
+                bar='smooth',
+                spinner='dots_reverse',
+                title='Checking domains integrity ...'
+        ) as bar:
+            for domain in sm_domains:
+                # Domain data dir exists ?
+                if not path.isdir(sm_domains[domain]['data_path']):
+                    logger.error('%s: Data path directory does not exists %s' % (domain, sm_domains[domain]['data_path']))
+                    bar()
+                    continue
+
+                # Domain settings file exists and is parsable ?
+                if not path.isfile(path.join(sm_domains[domain]['data_path'], 'settings.json')):
+                    logger.error('%s: Domain settings json file %s does not exists' % (domain, path.join(sm_domains[domain]['data_path'], 'settings.json')))
+                    bar()
+                    continue
+                sm_domains_settings[domain] = smarterlib.load_json(path.join(sm_domains[domain]['data_path'], 'settings.json'))
+                if not sm_domains_settings[domain]:
+                    logger.error('Domain %s settings json file is not parsable. A recovery could be attempted with --fix' % domain)
+
+                # Domain accounts file and is parsable ?
+                if not path.isfile(path.join(sm_domains[domain]['data_path'], 'accounts.json')):
+                    logger.warning('%s: Domain accounts json file %s does not exists' % (domain, path.join(sm_domains[domain]['data_path'], 'accounts.json')))
+                    bar()
+                    continue
+                sm_domains_accounts[domain] = smarterlib.load_json(path.join(sm_domains[domain]['data_path'], 'accounts.json'))
+                if not sm_domains_accounts[domain]:
+                    logger.error('Domain %s accounts json file is not parsable. A recovery could be attempted with --fix' % domain)
+
+                bar()
 
 
 # Main definition

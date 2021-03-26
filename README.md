@@ -20,10 +20,11 @@ How to use
 
 TODOs
 
-- Identify SmarterMail version
 - Check integrity (start with domains.json and recursively check each domain/user)
-- Check folders possible issue (case mismatch, non-existing folders, subscribed folders, etc)
-- Rebuild user folder
+- Check user folders possible issue (case mismatch, non-existing folders, subscribed folders, etc)
+- Rebuild user folders
+- Check root.cfg / mailbox.cfg for corruption (proprietary format, can we use a DLL shipped with SM?)
+- Check GRP files for corruption (proprietary format, can we use a DLL shipped with SM?)
 - View raw formatted json for domains / users (settings.json, folders.json, domains,json, etc)
 
 Credits
