@@ -1,3 +1,7 @@
 loguru
 pywin32
 alive-progress
+fqdn
+requests
+prettytable
+colored

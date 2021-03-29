@@ -4,8 +4,19 @@ import sys
 import shutil
 import json
 import base64
+from datetime import datetime
 from loguru import logger
 from win32api import GetFileVersionInfo, LOWORD, HIWORD
+from win32com.client import GetObject
+import urllib3
+import requests
+
+# Global objects
+request_headers = {}
+api_verify_ssl = False
+
+# Disable annoying SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def init_logger(debug_enabled=False, colorless=False):
@@ -24,6 +35,33 @@ def init_logger(debug_enabled=False, colorless=False):
     return logger
 
 
+def dhms_from_seconds(seconds):
+    # Return days, hours, minutes, seconds from seconds
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    return days, hours, minutes, seconds
+
+
+def dhms_to_string(dhms):
+    # Return formatted dhms
+    # There is a probably a better way to do it but at least it works (somehow)
+    dhms_string = ''
+    days, hours, minutes, seconds = dhms
+    if days > 0:
+        dhms_string = '%d days ' % days
+    if hours > 0 or dhms_string != '':
+        dhms_string = '%s%d hours ' % (dhms_string, hours)
+    if minutes > 0 or dhms_string != '':
+        dhms_string = '%s%d minutes ' % (dhms_string, minutes)
+    if seconds > 0 or dhms_string != '':
+        dhms_string = '%s%d seconds ' % (dhms_string, seconds)
+    if dhms_string != '':
+        dhms_string = '%sago' % dhms_string
+
+    return dhms_string
+
+
 def get_executable_version(executable):
     # Get version of an executable file
     try:
@@ -33,6 +71,29 @@ def get_executable_version(executable):
         return HIWORD(ms), LOWORD(ms), HIWORD(ls), LOWORD(ls)
     except:
         return None
+
+
+def get_process_info(process_name):
+    # Check if a process is running
+    # Returns dict of infos if process is running or return False
+    wmi = GetObject('winmgmts:')
+    for p in wmi.ExecQuery('select * from Win32_Process where Name="%s"' % process_name):
+        # Getting process creation date and uptime
+        start_date, *_ = p.CreationDate.split('.')
+        start_date = datetime.strptime(start_date, '%Y%m%d%H%M%S')
+        uptime = datetime.now() - start_date
+
+        # Dict to return
+        process_infos = {
+            'name': p.Name,
+            'pid': p.ProcessId,
+            'start_date': start_date,
+            'uptime': uptime,
+            'os': p.OSName.split('|')[0] + ' ' + p.WindowsVersion,
+            'memory_usage': "{:.2f}MB".format(int(p.WorkingSetSize) / 1024 / 1024)
+        }
+        return process_infos
+    return False
 
 
 def load_json(json_file):
@@ -47,6 +108,86 @@ def load_json(json_file):
         return False
     logger.debug('Json file %s parsed successfully' % json_file)
     return json_data
+
+
+def api_login(api_url, api_user, api_pass):
+    global admin_token
+    json_data = {
+        "username": api_user,
+        "password": api_pass
+    }
+    # Try to authenticate
+    response = api_post(api_url, "auth", "authenticate-user", json_data)
+
+    if response.status_code != 200:
+        logger.error('API: Unable to authenticate with %s: (%s) %s' % (
+            api_url, response.status_code, response.json()['message']))
+        sys.exit(1)
+
+    admin_token = response.json()['accessToken']
+    request_headers['Authorization'] = 'Bearer ' + admin_token
+    return True
+
+
+def api_get(api_url, section, action):
+    global request_headers
+    request_url = "%s/api/v1/%s/%s" % (api_url, section, action)
+    response = requests.get(request_url, verify=api_verify_ssl, headers=request_headers)
+    logger.debug('GET %s' % request_url)
+    logger.debug('Response status code: %s' % response.status_code)
+    #logger.debug('Response raw content: %s' % response.content)
+    if response.status_code not in [200, 400]:
+        logger.error('GET failed from %s: (%s) %s' % (request_url, response.status_code, response.json()['message']))
+        sys.exit(1)
+    return response
+
+
+def api_post(api_url, section, action, json_data=None):
+    global request_headers
+    request_url = "%s/api/v1/%s/%s" % (api_url, section, action)
+    response = requests.post(request_url, verify=api_verify_ssl, headers=request_headers, json=json_data)
+    logger.debug('POST %s' % request_url)
+    logger.debug('Response status code: %s' % response.status_code)
+    #logger.debug('Response raw content: %s' % response.content)
+    if response.status_code != 200:
+        logger.error('GET failed from %s: (%s) %s' % (request_url, response.status_code, response.json()['message']))
+        sys.exit(1)
+    return response
+
+
+def get_services_status(api_url):
+    #
+    # Get SmarterMail services status
+    # Return a dict if successful. False if it's not
+    #
+    results = api_get(api_url, 'settings/sysadmin', 'services')
+    if results:
+        services = []
+        for service in results.json()['services']:
+            services.append({
+                'name': service,
+                'running': results.json()['services'][service]
+            })
+        return services
+    return False
+
+
+def stop_subservice(api_url, service):
+    # Stop a sub-service via the API
+    json_data = {[service]}
+    results = api_post(api_url, 'settings/sysadmin', 'stop-services', json_data)
+    if results:
+        return results.json()['success']
+    return False
+
+
+def start_subservice(api_url, service):
+    # Start a sub-service via the API
+    json_data = {[service]}
+    results = api_post(api_url, 'settings/sysadmin', 'start-services', json_data)
+    if results:
+        return results.json()['success']
+    return False
 
 
 # Main definition

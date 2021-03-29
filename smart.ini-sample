@@ -4,8 +4,10 @@
 sm_install_dir=C:\Program Files (x86)\SmarterTools\SmarterMail
 
 [api]
+use_api=1
 # The URL of your SmarterMail server interface to reach the API
-server=https://localhost:443
+url=https://localhost:443
+verify_ssl=0
 # SmarterMail API user credentials.
 # The user should have admin privileges to use advanced functions.
 username=myapiuser
