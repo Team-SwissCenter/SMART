@@ -16,20 +16,79 @@ from prettytable import PrettyTable
 #
 # Globally available objects initialization
 #
-
+logger = smarterlib.init_logger()
 args = {}
-
-infos = {}
-infos['total_domains_to_check'] = 0
-infos['total_accounts_to_check'] = 0
-infos['total_subscribed_folders_mismatch'] = 0
-
+config = {}
+infos = {
+    'total_domains_to_check': 0,
+    'total_accounts_to_check': 0,
+    'total_subscribed_folders_mismatch': 0
+}
 sm_domains = {}
 sm_domains_settings = {}
 sm_domains_accounts = {}
 sm_accounts_settings = {}
 sm_accounts_folders = {}
-logger = smarterlib.init_logger()
+stuff_to_fix = []
+
+
+def process_args():
+    #
+    # Command-line parser logic
+    #
+    parser = argparse.ArgumentParser(
+        description='SMART - SmarterMail Analysis and Recovery Tool.')
+
+    # global options
+    parser.set_defaults(which=None)
+    parser.add_argument('-c', action='store_true', help='color-less mode')
+    parser.add_argument('-d', action='store_true', help='output debug messages')
+    subparsers = parser.add_subparsers(help='Action to execute')
+
+    # service options
+    service_parser = subparsers.add_parser('service', help='Service status and commands (stop/start)')
+    service_parser.set_defaults(which='service')
+    service_parser.add_argument('subaction', help='Sub-action (stop/start/status)')
+    service_parser.add_argument('service', help='Service name')
+
+    # check options
+    check_parser = subparsers.add_parser('check', help='Check SmarterMail domains / users for config corruption')
+    check_parser.set_defaults(which='check')
+    check_parser.add_argument('--domain', help='Limit check to this domain', required=False)
+    check_parser.add_argument('--check-folders', help='Also check user folders for possible issues', action='store_true', required=False)
+    check_parser.add_argument('--fix', '-f', help='(Try to) fix what is fixable', action='store_true', required=False)
+
+    # reload-domain options
+    reload_domain_parser = subparsers.add_parser('reload-domain', help='Live reload a domain configuration')
+    reload_domain_parser.set_defaults(which='reload-domain')
+    reload_domain_parser.add_argument('domain', help='Domain name')
+
+    # rebuild options
+    rebuild_parser = subparsers.add_parser('rebuild', help='Rebuild a user folder (rebuild mailbox.cfg)')
+    rebuild_parser.set_defaults(which='rebuild')
+    rebuild_parser.add_argument('--user', help='User to rebuild folders (user@domain)', required=True)
+    rebuild_parser.add_argument('--folder', help='Folder to rebuild (i.e. "Inbox" or "all")', required=True)
+    args = parser.parse_args()
+
+    # Configure logging
+    logger = smarterlib.init_logger(args.d, args.c)
+
+    # Disable logger for some actions (if not debug mode)
+    if 'service' in args.which:
+        logger = smarterlib.init_logger(error_only=True, debug_enabled=args.d)
+
+    # Check selection action
+    if not args.which:
+        logger.error('Not sure what you want to do ? Try -h for the help')
+        sys.exit(1)
+
+    # Sanity checking on arguments
+    if 'domain' in args and args.domain:
+        if not FQDN(args.domain).is_valid:
+            logger.error('Domain %s is not a valid FQDN.' % args.domain)
+            sys.exit(1)
+
+    return args
 
 
 def load_config(config_file):
@@ -115,7 +174,7 @@ def check_domains_integrity():
     #
     # Check domains for errors
     #
-    global args, infos, sm_domains, sm_domains_settings, sm_domains_accounts
+    global args, infos, sm_domains, sm_domains_settings, sm_domains_accounts, stuff_to_fix
     logger.info('Checking domains data path, settings and accounts definitions')
 
     # Running on all domains or a particular one ?
@@ -141,27 +200,27 @@ def check_domains_integrity():
                 bar()
                 continue
 
+            # TODO:
             # Domain settings file exists and is parsable ?
-            if not path.isfile(path.join(sm_domains[domain]['data_path'], 'settings.json')):
-                logger.error('%s: Domain settings json file %s does not exists' % (
-                domain, path.join(sm_domains[domain]['data_path'], 'settings.json')))
-                bar()
-                continue
-            sm_domains_settings[domain] = smarterlib.load_json(
-                path.join(sm_domains[domain]['data_path'], 'settings.json'))
+            sm_domains_settings[domain] = smarterlib.load_domain_json(
+                domain, sm_domains[domain]['data_path'], 'settings.json', args.fix, False)
             if not sm_domains_settings[domain]:
-                logger.error('Domain %s settings json file is not parsable' % domain)
+                logger.error('Domain %s settings json file is not parsable.' % domain)
+                stuff_to_fix.append({
+                   'what': 'domain_settings_json',
+                   'domain': domain,
+                })
+                bar()
 
             # Domain accounts file and is parsable ?
-            if not path.isfile(path.join(sm_domains[domain]['data_path'], 'accounts.json')):
-                logger.warning('%s: Domain accounts json file %s does not exists' % (
-                domain, path.join(sm_domains[domain]['data_path'], 'accounts.json')))
-                bar()
-                continue
-            sm_domains_accounts[domain] = smarterlib.load_json(
-                path.join(sm_domains[domain]['data_path'], 'accounts.json'))
+            sm_domains_accounts[domain] = smarterlib.load_domain_json(
+                domain, sm_domains[domain]['data_path'], 'accounts.json', args.fix, False)
             if not sm_domains_accounts[domain]:
                 logger.error('Domain %s accounts json file is not parsable.' % domain)
+                stuff_to_fix.append({
+                    'what': 'domain_accounts_json',
+                    'domain': domain,
+                })
 
             # Keep track of how many accounts we'll have to check later
             infos['total_accounts_to_check'] += len(sm_domains_accounts[domain]['users'])
@@ -185,13 +244,21 @@ def check_accounts_integrity():
             if args.domain and args.domain not in domain:
                 continue
 
+            # Skip currently errored domains
+            if next((i for i, d in enumerate(stuff_to_fix) if domain in d['domain']), None) is not None:
+                logger.warning(
+                    '%s :: Skipped accounts checking due to errors in previous checks' % domain)
+                bar()
+                continue
+
+            # Check accounts
             for domain_account in sm_domains_accounts[domain]['users']:
                 account_data_path = path.join(sm_domains[domain]['data_path'], 'Users', domain_account)
                 # Check if user data dir exists
                 if not path.isdir(account_data_path):
                     logger.error(
-                        '%s [%s] :: Account data path directory does not exists %s' % (
-                        domain, domain_account, account_data_path))
+                        '%s@%s :: Account data path directory does not exists %s'
+                        % (domain_account, domain, account_data_path))
                     bar()
                     continue
 
@@ -199,9 +266,14 @@ def check_accounts_integrity():
                 account_settings_file = path.join(account_data_path, 'settings.json')
                 sm_accounts_settings[domain + '@' + domain_account] = smarterlib.load_json(account_settings_file)
                 if not sm_accounts_settings[domain + '@' + domain_account]:
+                    stuff_to_fix.append({
+                        'what': 'account_settings_json',
+                        'domain': domain,
+                        'account': domain_account
+                    })
                     logger.error(
-                        '%s [%s] :: Account settings json file is not parsable or does not exists.' % (
-                        domain, domain_account))
+                        '%s@%s :: Account settings json file is not parsable or does not exists.'
+                        % (domain_account, domain))
                     bar()
                     continue
 
@@ -209,22 +281,54 @@ def check_accounts_integrity():
                 account_folders_file = path.join(account_data_path, 'folders.json')
                 sm_accounts_folders[domain + '@' + domain_account] = smarterlib.load_json(account_folders_file)
                 if not sm_accounts_folders[domain + '@' + domain_account]:
+                    stuff_to_fix.append({
+                        'what': 'accounts_folders_json',
+                        'domain': domain,
+                        'account': domain_account
+                    })
                     logger.error(
-                        '%s [%s] :: Account folder settings json file is not parsable or does not exists.' % (
-                        domain, domain_account))
+                        '%s@%s :: Account folder settings json file is not parsable or does not exists.'
+                        % (domain_account, domain))
                     bar()
                     continue
                 bar()
 
-                # Check for subscribed folder case mismatch issue
-                if 'imap_subscribed_folders' in sm_accounts_folders[domain + '@' + domain_account]:
-                    for subscribed_folder in sm_accounts_folders[domain + '@' + domain_account][
-                        'imap_subscribed_folders']:
-                        if subscribed_folder.startswith('Inbox\\'):
-                            infos['total_subscribed_folders_mismatch'] += 1
-                            logger.warning(
-                                '%s [%s] :: IMAP subscribed folder %s for account probably has an issue (Inbox->INBOX).' % (
-                                domain, domain_account, subscribed_folder))
+                if args.check_folders:
+                    # Check for subscribed folder case mismatch issue
+                    found_inbox = False
+                    for folder in sm_accounts_folders[domain + '@' + domain_account]['folders']:
+                        if ('type' in folder and 'special_folder_type' in folder)\
+                                and folder['type'] == 1 and folder['special_folder_type'] == 0:
+                            if found_inbox:
+                                stuff_to_fix.append({
+                                    'what': 'multiple_inbox',
+                                    'domain': domain,
+                                    'account': domain_account
+                                })
+                                logger.warning('%s@%s :: Account has MORE than one mail Inbox folder.'
+                                               % (domain_account, domain))
+                            if folder['display_name'] != 'Inbox' or folder['path'] != 'Inbox':
+                                stuff_to_fix.append({
+                                    'what': 'inbox_name',
+                                    'domain': domain,
+                                    'account': domain_account
+                                })
+                                logger.warning('%s@%s :: Account Inbox folder name and/or path is not correct' %
+                                               (domain_account, domain))
+                            found_inbox = True
+
+                    if 'imap_subscribed_folders' in sm_accounts_folders[domain + '@' + domain_account]:
+                        for subscribed_folder in sm_accounts_folders[domain + '@' + domain_account]['imap_subscribed_folders']:
+                            if subscribed_folder.startswith('INBOX\\'):
+                                infos['total_subscribed_folders_mismatch'] += 1
+                                stuff_to_fix.append({
+                                    'what': 'subscribed_folders_mismatch',
+                                    'domain': domain,
+                                    'account': domain_account
+                                })
+                                logger.warning(
+                                    '%s@%s :: IMAP subscribed folder %s for account probably has an issue (INBOX -> Inbox).'
+                                    % (domain_account, domain, subscribed_folder))
     return True
 
 
@@ -232,8 +336,15 @@ def service_action():
     global logger, config
     sm_process = smarterlib.get_process_info('MailService.exe')
     if sm_process:
-        logger.opt(colors=True).info('SmarterMail main process running with PID <yellow>%d</> on <yellow>%s</>' % (
-        sm_process['pid'], sm_process['os']))
+        print('SmarterMail main process running with PID <yellow>%d</> on <yellow>%s</>'
+                                     % (sm_process['pid'], sm_process['os']))
+        print('Running since <yellow>%s</> and currently using <yellow>%s</> of system memory.' % (
+                sm_process['uptime'],
+                sm_process['memory_usage']
+        ))
+
+        logger.opt(colors=True).info('SmarterMail main process running with PID <yellow>%d</> on <yellow>%s</>'
+                                     % (sm_process['pid'], sm_process['os']))
         logger.opt(colors=True).info(
             'Running since <yellow>%s</> and currently using <yellow>%s</> of system memory.' % (
                 sm_process['uptime'],
@@ -257,21 +368,39 @@ def service_action():
             return False
 
         # Check if submitted service name exists
-        if args.service and args.service not in ['xmpp', 'ldap', 'all']:
+        if args.service and args.service not in services:
             logger.error('Unknown service %s' % args.service)
             return False
 
-        # Subaction given
+        # Subaction given - action needed
+        svc_recheck = False
         if 'stop' in args.subaction:
-            result = smarterlib.stop_subservice(config['api']['url'], args.service)
+            if not services[args.service]:
+                logger.debug('Service "%s" is already stopped' % args.service)
+            else:
+                smarterlib.stop_subservice(config['api']['url'], args.service)
+                logger.debug('Service "%s" stopped successfully' % args.service)
+                svc_recheck = True
         if 'start' in args.subaction:
-            result = smarterlib.start_subservice(config['api']['url'], args.service)
+            if services[args.service]:
+                logger.debug('Service "%s" is already running' % args.service)
+            else:
+                smarterlib.start_subservice(config['api']['url'], args.service)
+                logger.debug('Service "%s" started successfully' % args.service)
+                svc_recheck = True
+
+        # Check again the services state
+        if svc_recheck:
+            services = smarterlib.get_services_status(config['api']['url'])
 
         # Standard action
         pt = PrettyTable()
         pt.field_names = ['Service', 'Status']
         for service in services:
-            pt.add_row([service['name'], '%srunning%s' % (fg('green'), attr('reset'))])
+            if services[service]:
+                pt.add_row([service, '%srunning%s' % (fg('green'), attr('reset'))])
+            else:
+                pt.add_row([service, '%sstopped%s' % (fg('red'), attr('reset'))])
         pt.align = 'r'
         print(pt)
         return True
@@ -282,51 +411,9 @@ def service_action():
 #
 def main():
     global args, logger, infos, config, sm_domains, sm_domains_settings, sm_domains_accounts, sm_accounts_folders
-    #
-    # Command-line parser logic
-    #
-    parser = argparse.ArgumentParser(
-        description='EvenSmarterTools - The SmarterMail Swiss Army Knife.')
 
-    # Global options
-    parser.set_defaults(which=None)
-    parser.add_argument('-c', action='store_true', help='color-less mode')
-    parser.add_argument('-d', action='store_true', help='output debug messages')
-    subparsers = parser.add_subparsers(help='sub-command help')
-
-    # Check options
-    service_parser = subparsers.add_parser('service', help='Status and operations on SmarterMail services')
-    service_parser.set_defaults(which='service')
-    service_parser.add_argument('subaction', help='Sub-action (stop/start/status)')
-    service_parser.add_argument('service', help='Service name')
-
-    # Check options
-    check_parser = subparsers.add_parser('check', help='Check SmarterMail domains / users for config corruption')
-    check_parser.set_defaults(which='check')
-    check_parser.add_argument('--fix', '-f', help='(Try to) fix what is fixable', action='store_true', required=False)
-    check_parser.add_argument('--domain', help='Limit check to this domain', required=False)
-
-    # Rebuild options
-    rebuild_parser = subparsers.add_parser('rebuild', help='Rebuild a user folder (rebuild mailbox.cfg)')
-    rebuild_parser.set_defaults(which='rebuild')
-    rebuild_parser.add_argument('--user', help='User to rebuild folders (user@domain)', required=True)
-    rebuild_parser.add_argument('--folder', help='Folder to rebuild (i.e. "Inbox" or "all")', required=True)
-    args = parser.parse_args()
-
-    # Configure logging
-    logger = smarterlib.init_logger(args.d, args.c)
-
-    # Check selection action
-    action = args.which
-    if not action:
-        logger.error('Not sure what you want to do ? Try -h for the help')
-        sys.exit(1)
-
-    # Sanity checking on arguments
-    if 'domain' in args and args.domain:
-        if not FQDN(args.domain).is_valid:
-            logger.error('Domain %s is not a valid FQDN.' % args.domain)
-            sys.exit(1)
+    # Process command-line arguments
+    args = process_args()
 
     # Load config
     load_config(path.join(path.dirname(path.realpath(__file__)), 'smart.ini'))
@@ -358,7 +445,7 @@ def main():
     #
     # Actions
     #
-    if 'check' in action:
+    if 'check' in args.which:
         logger.info('Loaded %d domains and %d domain aliases' % (len(sm_domains), len(sm_domains_aliases)))
 
         # Check domains integrity (required)
@@ -372,9 +459,20 @@ def main():
         if infos['total_subscribed_folders_mismatch'] and infos['total_subscribed_folders_mismatch'] > 0:
             logger.warning('Found %d IMAP subscribed folder(s) with possible issue in Thunderbird. '
                            'A recovery could be attempted with --fix' % infos['total_subscribed_folders_mismatch'])
-    elif 'service' in action:
+
+        if args.fix:
+            stuff_to_fix_unique = [dict(s) for s in set(frozenset(o.items()) for o in stuff_to_fix)]
+            print(stuff_to_fix_unique)
+    elif 'service' in args.which:
         service_action()
-    elif 'rebuild' in action:
+    elif 'reload-domain' in args.which:
+        if args.domain not in sm_domains:
+            logger.error('Domain %s does not exists.' % args.domain)
+            return False
+        logger.info('Reloading domain %s' % args.domain)
+        smarterlib.api_login(config['api']['url'], config['api']['username'], config['api']['password'])
+        smarterlib.reload_domain(config['api']['url'], args.domain)
+    elif 'rebuild' in args.which:
         logger.info('Rebuilding folder')
     else:
         logger.critical('Unknown action. The dev guy of this utility is dumb')

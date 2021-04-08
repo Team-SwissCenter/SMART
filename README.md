@@ -37,6 +37,8 @@ Unfortunately I lack experience with PowerShell. I'm a bit more comfortable with
 - Check integrity (start with domains.json and recursively check each domain/user)
   get file from Archive/ or check for .tmp
 - Check user folders possible issue (case mismatch, non-existing folders, subscribed folders, etc)
+- Check contacts for empty entries that could prevent EAS sync 
+- Check fodlders path len that could render a user unusable
 - Rebuild user folders
 - Check root.cfg / mailbox.cfg for corruption (proprietary format, can we use a DLL shipped with SM?)
 - Check GRP files for corruption (proprietary format, can we use a DLL shipped with SM?)

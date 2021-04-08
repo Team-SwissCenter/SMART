@@ -4,6 +4,7 @@ import sys
 import shutil
 import json
 import base64
+from os import path
 from datetime import datetime
 from loguru import logger
 from win32api import GetFileVersionInfo, LOWORD, HIWORD
@@ -15,14 +16,18 @@ import requests
 request_headers = {}
 api_verify_ssl = False
 
+# Constants
+archive_subfolder = 'Archived Data'
+
 # Disable annoying SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-
-def init_logger(debug_enabled=False, colorless=False):
+def init_logger(debug_enabled=False, error_only=False, colorless=False):
     # Initialize the logger with custom settings
     if debug_enabled:
         log_level = "DEBUG"
+    elif error_only:
+        log_level = "ERROR"
     else:
         log_level = "INFO"
     logger.stop()
@@ -103,7 +108,7 @@ def load_json(json_file):
     try:
         with open(json_file, encoding='utf-8-sig') as f:
             json_data = json.load(f)
-    except ValueError as err:
+    except (ValueError, FileNotFoundError) as err:
         logger.error('Could not parse json file %s: %s' % (json_file, err))
         return False
     logger.debug('Json file %s parsed successfully' % json_file)
@@ -135,7 +140,7 @@ def api_get(api_url, section, action):
     response = requests.get(request_url, verify=api_verify_ssl, headers=request_headers)
     logger.debug('GET %s' % request_url)
     logger.debug('Response status code: %s' % response.status_code)
-    #logger.debug('Response raw content: %s' % response.content)
+    logger.debug('Response raw content: %s' % response.content)
     if response.status_code not in [200, 400]:
         logger.error('GET failed from %s: (%s) %s' % (request_url, response.status_code, response.json()['message']))
         sys.exit(1)
@@ -148,9 +153,9 @@ def api_post(api_url, section, action, json_data=None):
     response = requests.post(request_url, verify=api_verify_ssl, headers=request_headers, json=json_data)
     logger.debug('POST %s' % request_url)
     logger.debug('Response status code: %s' % response.status_code)
-    #logger.debug('Response raw content: %s' % response.content)
+    logger.debug('Response raw content: %s' % response.content)
     if response.status_code != 200:
-        logger.error('GET failed from %s: (%s) %s' % (request_url, response.status_code, response.json()['message']))
+        logger.error('POST failed from %s: (%s) %s' % (request_url, response.status_code, response.json()['message']))
         sys.exit(1)
     return response
 
@@ -162,19 +167,16 @@ def get_services_status(api_url):
     #
     results = api_get(api_url, 'settings/sysadmin', 'services')
     if results:
-        services = []
+        services = {}
         for service in results.json()['services']:
-            services.append({
-                'name': service,
-                'running': results.json()['services'][service]
-            })
+            services[service] = results.json()['services'][service]
         return services
     return False
 
 
 def stop_subservice(api_url, service):
     # Stop a sub-service via the API
-    json_data = {[service]}
+    json_data = {'input': [service]}
     results = api_post(api_url, 'settings/sysadmin', 'stop-services', json_data)
     if results:
         return results.json()['success']
@@ -183,10 +185,62 @@ def stop_subservice(api_url, service):
 
 def start_subservice(api_url, service):
     # Start a sub-service via the API
-    json_data = {[service]}
+    json_data = {'input': [service]}
     results = api_post(api_url, 'settings/sysadmin', 'start-services', json_data)
     if results:
         return results.json()['success']
+    return False
+
+
+def reload_domain(api_url, domain):
+    # Reload a domain configuration
+    json_data = {}
+    results = api_post(api_url,'settings/sysadmin', 'reload-domain/' + domain)
+    if results:
+        return results.json()['success']
+    return False
+
+
+# TODO:
+def load_domain_json(domain, domain_data_path, json_file, fix, no_prompt):
+    # Check if file exists
+    f = path.join(domain_data_path, json_file)
+    if path.isfile(f):
+        json_data = load_json(f)
+        if json_data:
+            return json_data
+        else:
+            logger.error('%s :: settings json file is not parsable.' % domain)
+
+    if fix:
+        # Check if a tmp file exists
+        f = path.join(domain_data_path, json_file + '.tmp')
+        if path.isfile(f):
+            json_data = load_json(f)
+            if json_data:
+                logger.info('%s :: Found valid domain settings file [tmp]: %s' % (domain, f))
+                # Copy file to original file destination and return data
+                return json_data
+
+        # Check if a valid file exists in archive
+        f = path.join(domain_data_path, archive_subfolder, json_file)
+        if path.isfile(f):
+            json_data = load_json(f)
+            if json_data:
+                logger.info('%s :: Found valid domain settings file [archive] %s' % (domain, f))
+                # Copy file to original file destination and return data
+                return json_data
+
+    # Check if a valid file exists in zipped archives
+
+    # Return false if all failed
+    return False
+
+
+def autofix_domain_accounts(domain, domain_data_path):
+    # Check if a tmp file exists
+    # Check if a valid file exists in archive
+    # Check if a valid file exists in zipped archives
     return False
 
 
