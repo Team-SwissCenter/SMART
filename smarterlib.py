@@ -101,7 +101,7 @@ def get_process_info(process_name):
     return False
 
 
-def load_json(json_file):
+def load_json(json_file, silent=False):
     # Try to open a json file and parse the content.
     # Returns the parsed data if successful
     # Returns False if the file is not a valid json
@@ -109,7 +109,8 @@ def load_json(json_file):
         with open(json_file, encoding='utf-8-sig') as f:
             json_data = json.load(f)
     except (ValueError, FileNotFoundError) as err:
-        logger.error('Could not parse json file %s: %s' % (json_file, err))
+        if not silent:
+            logger.error('Could not parse json file %s: %s' % (json_file, err))
         return False
     logger.debug('Json file %s parsed successfully' % json_file)
     return json_data

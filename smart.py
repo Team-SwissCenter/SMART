@@ -56,6 +56,7 @@ def process_args():
     check_parser.set_defaults(which='check')
     check_parser.add_argument('--domain', help='Limit check to this domain', required=False)
     check_parser.add_argument('--check-folders', help='Also check user folders for possible issues', action='store_true', required=False)
+    check_parser.add_argument('--check-contacts', help='Also check user contacts for possible issues', action='store_true', required=False)
     check_parser.add_argument('--fix', '-f', help='(Try to) fix what is fixable', action='store_true', required=False)
 
     # reload-domain options
@@ -251,7 +252,9 @@ def check_accounts_integrity():
                 bar()
                 continue
 
+            #####
             # Check accounts
+            #####
             for domain_account in sm_domains_accounts[domain]['users']:
                 account_data_path = path.join(sm_domains[domain]['data_path'], 'Users', domain_account)
                 # Check if user data dir exists
@@ -293,6 +296,9 @@ def check_accounts_integrity():
                     continue
                 bar()
 
+                #####
+                # Folders check
+                #####
                 if args.check_folders:
                     # Check for subscribed folder case mismatch issue
                     found_inbox = False
@@ -329,6 +335,96 @@ def check_accounts_integrity():
                                 logger.warning(
                                     '%s@%s :: IMAP subscribed folder %s for account probably has an issue (INBOX -> Inbox).'
                                     % (domain_account, domain, subscribed_folder))
+
+                #####
+                # Contacts check
+                #####
+                if args.check_contacts:
+                    # Check for problematic contacts
+                    contacts_folders_files = set()
+                    for folder in sm_accounts_folders[domain + '@' + domain_account]['folders']:
+                        if ('type' in folder) and folder['type'] == 3:
+                            found_contacts_filename = 'folder-%s.json' % folder['id']
+                            contacts_folders_files.add(found_contacts_filename)
+                            logger.debug(
+                                '%s@%s :: Contacts folder found: "%s" (%s)'
+                                % (domain_account, domain, folder['display_name'], found_contacts_filename))
+
+                    if len(contacts_folders_files) < 1:
+                        stuff_to_fix.append({
+                            'what': 'user_no_contact_folders',
+                            'domain': domain,
+                            'account': domain_account,
+                        })
+                        logger.warning(
+                            '%s@%s :: No contact folder found. This should not happen!' % (domain_account, domain))
+                    else:
+                        for contacts_folder_file in contacts_folders_files:
+                            logger.debug(
+                                '%s@%s :: Checking contacts file %s'
+                                % (domain_account, domain, contacts_folder_file))
+                            contacts_json = smarterlib.load_json(
+                                path.join(account_data_path, contacts_folder_file), True)
+
+                            # TODO: Inform if file is not present ?
+                            # Skip contact folder if the json file was not found or was not parsable
+                            if not contacts_json:
+                                continue
+                            # Check if there are contacts in the file
+                            if not 'contacts' in contacts_json:
+                                continue
+
+                            # Parse contacts and check for errors
+                            found_bogus_contact = False
+                            logger.debug(
+                                '%s@%s :: Parsing contacts file %s' % (domain_account, domain, contacts_folder_file))
+                            for contact in contacts_json['contacts']:
+                                # Check if name_display_as is missing
+                                if 'name_display_as' not in contact or (contact['name_display_as'] and contact['name_display_as'].isspace()):
+                                    found_bogus_contact = True
+                                    logger.warning(
+                                        '%s@%s :: Contact file %s is missing mandatory fied name_display_as. EAS Bug ?'
+                                        % (domain_account, domain, contacts_folder_file))
+                                    continue
+
+                                # These other checks matches a lot of entries and doesn't seem to affect EAS sync
+                                # Disabled for now but kept in code in case we need it later
+                                """
+                                # Check if blank e-mail addresses are found
+                                if 'email_addresses' in contact:
+                                    for e in contact['email_addresses']:
+                                        if 'address' not in e or not (e['address'] and
+                                                                      not e['address'].isspace()):
+                                            print(e)
+                                            exit
+                                            found_bogus_contact = True
+                                            logger.warning(
+                                                '%s@%s :: Contact file %s contains at least one bogus entry (empty e-mail address)'
+                                                % (domain_account, domain, contacts_folder_file))
+                                            continue
+
+                                # Check if blank phone numbers are found
+                                if 'phone_numbers' in contact:
+                                    for p in contact['phone_numbers']:
+                                        if 'number' not in p or not (p['number'] and
+                                                                      not p['number'].isspace()):
+                                            found_bogus_contact = True
+                                            logger.warning(
+                                                '%s@%s :: Contact file %s contains at least one bogus entry (empty phone number)'
+                                                % (domain_account, domain, contacts_folder_file))
+                                            continue
+                                """
+
+                                # Contact is bogus, adding entry to things to fix
+                                if found_bogus_contact:
+                                    stuff_to_fix.append({
+                                        'what': 'user_bogus_contact',
+                                        'domain': domain,
+                                        'account': domain_account,
+                                        'contacts_folder_file': contacts_folder_file,
+                                        'contact_guid': contact['guid']
+                                    })
+
     return True
 
 
