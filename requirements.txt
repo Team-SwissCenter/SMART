@@ -5,3 +5,5 @@ fqdn
 requests
 prettytable
 colored
+portalocker
+pythonnet

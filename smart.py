@@ -3,7 +3,7 @@
 import argparse
 import configparser
 import sys
-from os import path
+from os import path, walk
 from fqdn import FQDN
 #import shutil
 #import json
@@ -57,6 +57,7 @@ def process_args():
     check_parser.add_argument('--domain', help='Limit check to this domain', required=False)
     check_parser.add_argument('--check-folders', help='Also check user folders for possible issues', action='store_true', required=False)
     check_parser.add_argument('--check-contacts', help='Also check user contacts for possible issues', action='store_true', required=False)
+    check_parser.add_argument('--check-grp', help='Also check user GRP files for possible issues', action='store_true', required=False)
     check_parser.add_argument('--fix', '-f', help='(Try to) fix what is fixable', action='store_true', required=False)
 
     # reload-domain options
@@ -424,6 +425,15 @@ def check_accounts_integrity():
                                         'contacts_folder_file': contacts_folder_file,
                                         'contact_guid': contact['guid']
                                     })
+
+                #####
+                # GRP files checks
+                #####
+                if args.check_grp:
+                    logger.debug('%s@%s :: Looking up GRP files' % (domain_account, domain))
+                    user_grp_files = smarterlib.lookup_grp_files(path.join(account_data_path, 'Mail'))
+                    for grp_file in user_grp_files:
+                        grp_file_status = smarterlib.check_grp_file(grp_file)
 
     return True
 

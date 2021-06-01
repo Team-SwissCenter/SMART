@@ -4,13 +4,19 @@ import sys
 import shutil
 import json
 import base64
-from os import path
+from os import path, walk
 from datetime import datetime
 from loguru import logger
 from win32api import GetFileVersionInfo, LOWORD, HIWORD
 from win32com.client import GetObject
+import portalocker
 import urllib3
 import requests
+import clr
+clr.AddReference("C:\Program Files (x86)\SmarterTools\SmarterMail\Service\SmarterMail.Standard.dll")
+from SmarterMail.Standard.Files.Grp import MailboxGrpFile
+import email
+import time
 
 # Global objects
 request_headers = {}
@@ -236,6 +242,62 @@ def load_domain_json(domain, domain_data_path, json_file, fix, no_prompt):
 
     # Return false if all failed
     return False
+
+
+def lookup_grp_files(scan_path):
+    # Return a list of GRP files
+    user_grp_files = list()
+    for root, dirs, files in walk(scan_path):
+        for file in files:
+            if file.endswith(".grp"):
+                logger.debug('Found GRP file %s' % (path.join(root, file)))
+                user_grp_files.append(path.join(root, file))
+
+    if len(user_grp_files) < 1:
+        logger.debug('No GRP files found.')
+    else:
+        logger.debug('%s GRP files found.' % len(user_grp_files))
+
+    return user_grp_files
+
+
+def check_grp_file(grp_file):
+    # Check a GRP file for possible known issues
+    logger.debug('Verifying GRP file %s' % grp_file)
+    out = None
+    #portalocker.lock(grp_file, portalocker.LOCK_EX)
+    result, loaded_grp_file = MailboxGrpFile.TryLoad(grp_file, out)
+    # portalocker.unlock(grp_file)
+
+    if not result:
+        logger.warning('Cannot load GRP file %s. It seems invalid.' % grp_file)
+        return False
+
+    logger.debug('GRP file %s contains %s entries.' % (grp_file, len(loaded_grp_file.Entries)))
+
+    for grp_file_entry in loaded_grp_file.Entries:
+        logger.debug('Entry UID: %d | start: %d | end: %d | size: %d' % (grp_file_entry.UID, grp_file_entry.StartOffset, grp_file_entry.EndOffset, grp_file_entry.Size))
+
+        # Read group file entry content from file
+        with open(grp_file, 'r+b') as f:
+            portalocker.lock(f, portalocker.LOCK_EX)
+            # TODO: Read only header part (detect emtpy line?)
+            f.seek(grp_file_entry.StartOffset, 0)
+            grp_file_content = f.read(grp_file_entry.Size)
+            portalocker.unlock(f)
+            f.close()
+
+        # Process content and check for missing mandatory headers
+        msg = email.message_from_bytes(grp_file_content)
+
+        if 'From' not in msg and 'Subject' not in msg:
+            logger.warning('%s: No "From" and "Subject" headers found in (at least) one message. '
+                           'Could be an issue with this GRP file content!' % grp_file)
+            return False
+
+        logger.debug('From: %s | To: %s | Subject: %s' % (msg['From'], msg['To'], msg['Subject']))
+
+    return True
 
 
 def autofix_domain_accounts(domain, domain_data_path):
