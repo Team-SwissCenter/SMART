@@ -1,7 +1,11 @@
 ## SmarterMail Analysis and Recovery Tool (SMART)
 
 This utility aims to be the swiss army knife for every SmarterMail server administrator.
-It helps detect potential integrity, corruption issues and can in many cases provide an automatic recovery.
+It helps detect potential integrity, corruption issues and can in many cases could provide an automatic recovery.
+
+### WARNING *WORK IN PROGESS*
+
+Even the tool is not actually doing any changes to files ** USE IT AT YOUR OWN RISK **
 
 ### Why does this tool needs to exist. Why not use the official tools provided by SmarterTools ?
 
@@ -13,8 +17,6 @@ This can be domain accounts settings (json file), user account settings (json fi
 SmarterMail hopefully periodically backup these files in a sub-folder and it is possible to use them for recovery.
 However, this process is manual and on an installation with thousands of domains it can become a nightmare to fully recover to a 100% clean system after such an event.
 
-As for why not use the tools provided by SmarterTools, it's kinda simple. There is no tool for this, and the service doesn't try to heal itself when detecting corrupted files when starting (why not?)
-
 ### It's a Windows server. Why python and not PowerShell ?
 
 Unfortunately I lack experience with PowerShell. I'm a bit more comfortable with Python. Also, Python runs well on Windows and has a bunch of great libraries for the script requirements.
@@ -23,14 +25,15 @@ Unfortunately I lack experience with PowerShell. I'm a bit more comfortable with
 
 ### How to install
 
-- Ask your mum
-- Install Python 3.7+
+- Install Python 3.8 (3.9 not supported yet)
 - Clone repository
 - Run pip install -r requirements.txt
 - Add directory in $PATH env (optional)
-- Edit sm.ini
+- Copy sample config file to sm.ini and edit it
 
 ### How to use
+
+Basically use smart.py -h for help
 
 ### TODOs
 
