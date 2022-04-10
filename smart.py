@@ -3,11 +3,8 @@
 import argparse
 import configparser
 import sys
-from os import path, walk
+from os import path
 from fqdn import FQDN
-#import shutil
-#import json
-#import base64
 import smarterlib
 from alive_progress import alive_bar
 from colored import fg, bg, attr
@@ -58,6 +55,7 @@ def process_args():
     check_parser.add_argument('--check-folders', help='Also check user folders for possible issues', action='store_true', required=False)
     check_parser.add_argument('--check-contacts', help='Also check user contacts for possible issues', action='store_true', required=False)
     check_parser.add_argument('--check-grp', help='Also check user GRP files for possible issues', action='store_true', required=False)
+    check_parser.add_argument('--check-dkim', help='Also check domains for DKIM keys issues', action='store_true', required=False)
     check_parser.add_argument('--fix', '-f', help='(Try to) fix what is fixable', action='store_true', required=False)
 
     # reload-domain options
@@ -75,14 +73,14 @@ def process_args():
     # Configure logging
     logger = smarterlib.init_logger(args.d, args.c)
 
+    # Check selection action
+    if not args.which:
+        parser.print_help()
+        sys.exit(1)
+
     # Disable logger for some actions (if not debug mode)
     if 'service' in args.which:
         logger = smarterlib.init_logger(error_only=True, debug_enabled=args.d)
-
-    # Check selection action
-    if not args.which:
-        logger.error('Not sure what you want to do ? Try -h for the help')
-        sys.exit(1)
 
     # Sanity checking on arguments
     if 'domain' in args and args.domain:
@@ -202,7 +200,6 @@ def check_domains_integrity():
                 bar()
                 continue
 
-            # TODO:
             # Domain settings file exists and is parsable ?
             sm_domains_settings[domain] = smarterlib.load_domain_json(
                 domain, sm_domains[domain]['data_path'], 'settings.json', args.fix, False)
@@ -210,9 +207,22 @@ def check_domains_integrity():
                 logger.error('Domain %s settings json file is not parsable.' % domain)
                 stuff_to_fix.append({
                    'what': 'domain_settings_json',
+                   'severity': 'critical',
                    'domain': domain,
                 })
                 bar()
+
+            # Check domain DKIM integrity
+            if args.check_dkim:
+                if sm_domains_settings[domain]['settings']['enable_dkim_signing']  and \
+                        (len(sm_domains_settings[domain]['settings']['dkim_private_key']) == 0
+                         or len(sm_domains_settings[domain]['settings']['dkim_public_key']) == 0):
+                    stuff_to_fix.append({
+                        'what': 'dkim_missing_keys',
+                        'severity': 'warning',
+                        'domain': domain
+                    })
+                    logger.warning('%s :: DKIM signing enabled but public an/or private key missing in configuration' % domain)
 
             # Domain accounts file and is parsable ?
             sm_domains_accounts[domain] = smarterlib.load_domain_json(
@@ -221,6 +231,7 @@ def check_domains_integrity():
                 logger.error('Domain %s accounts json file is not parsable.' % domain)
                 stuff_to_fix.append({
                     'what': 'domain_accounts_json',
+                    'severity': 'critical',
                     'domain': domain,
                 })
 
@@ -247,7 +258,7 @@ def check_accounts_integrity():
                 continue
 
             # Skip currently errored domains
-            if next((i for i, d in enumerate(stuff_to_fix) if domain in d['domain']), None) is not None:
+            if next((i for i, d in enumerate(stuff_to_fix) if domain in d['domain'] and 'critical' in d['severity']), None) is not None:
                 logger.warning(
                     '%s :: Skipped accounts checking due to errors in previous checks' % domain)
                 bar()
@@ -272,6 +283,7 @@ def check_accounts_integrity():
                 if not sm_accounts_settings[domain + '@' + domain_account]:
                     stuff_to_fix.append({
                         'what': 'account_settings_json',
+                        'severity': 'critical',
                         'domain': domain,
                         'account': domain_account
                     })
@@ -287,6 +299,7 @@ def check_accounts_integrity():
                 if not sm_accounts_folders[domain + '@' + domain_account]:
                     stuff_to_fix.append({
                         'what': 'accounts_folders_json',
+                        'severity': 'critical',
                         'domain': domain,
                         'account': domain_account
                     })
@@ -309,6 +322,7 @@ def check_accounts_integrity():
                             if found_inbox:
                                 stuff_to_fix.append({
                                     'what': 'multiple_inbox',
+                                    'severity': 'warning',
                                     'domain': domain,
                                     'account': domain_account
                                 })
@@ -317,6 +331,7 @@ def check_accounts_integrity():
                             if folder['display_name'] != 'Inbox' or folder['path'] != 'Inbox':
                                 stuff_to_fix.append({
                                     'what': 'inbox_name',
+                                    'severity': 'warning',
                                     'domain': domain,
                                     'account': domain_account
                                 })
@@ -330,6 +345,7 @@ def check_accounts_integrity():
                                 infos['total_subscribed_folders_mismatch'] += 1
                                 stuff_to_fix.append({
                                     'what': 'subscribed_folders_mismatch',
+                                    'severity': 'warning',
                                     'domain': domain,
                                     'account': domain_account
                                 })
@@ -354,6 +370,7 @@ def check_accounts_integrity():
                     if len(contacts_folders_files) < 1:
                         stuff_to_fix.append({
                             'what': 'user_no_contact_folders',
+                            'severity': 'critical',
                             'domain': domain,
                             'account': domain_account,
                         })
@@ -420,6 +437,7 @@ def check_accounts_integrity():
                                 if found_bogus_contact:
                                     stuff_to_fix.append({
                                         'what': 'user_bogus_contact',
+                                        'severity': 'warning',
                                         'domain': domain,
                                         'account': domain_account,
                                         'contacts_folder_file': contacts_folder_file,
