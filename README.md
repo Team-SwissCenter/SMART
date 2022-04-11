@@ -5,7 +5,7 @@ It helps detect potential integrity, corruption issues and can in many cases cou
 
 ### WARNING *WORK IN PROGESS*
 
-Even the tool is not actually doing any changes to files ** USE IT AT YOUR OWN RISK **
+Even the tool is not actually doing any changes to files be aware that you ** USE IT AT YOUR OWN RISK **
 
 ### Why does this tool needs to exist. Why not use the official tools provided by SmarterTools ?
 
@@ -22,6 +22,19 @@ However, this process is manual and on an installation with thousands of domains
 Unfortunately I lack experience with PowerShell. I'm a bit more comfortable with Python. Also, Python runs well on Windows and has a bunch of great libraries for the script requirements.
 
 ### Use cases
+
+- Use smart.py -h for help and smart.py <command> -h for help on a subcommand
+
+Basically you can:
+
+- Check domains and users integrity (smart.py check)
+- Additionally, check domains for DKIM issues (DKIM enabled but missing keys)  (smart.py --check-dkim)
+- Additionally, check user folders for issues  (smart.py --check-folders)
+- Additionally, check user folders for contact issues  (smart.py --check-contacts)
+- Additionally, check user GRP files for corrupted mails, missing headers. (smart.py --check-grp). Warning the code is not optimal yet, and actually it needs to parse the whole GRP files. Can take a long time.
+
+By default all checks are done on all domains. You can restrict it to a single domain using --domain argument.
+--fix argument is actually not implemented yet and is ineffective. No changes to SmarterMail files will be made by the tool.
 
 ### How to install
 

@@ -46,7 +46,7 @@ def process_args():
     service_parser = subparsers.add_parser('service', help='Service status and commands (stop/start)')
     service_parser.set_defaults(which='service')
     service_parser.add_argument('subaction', help='Sub-action (stop/start/status)')
-    service_parser.add_argument('service', help='Service name')
+    service_parser.add_argument('--service', help='Service name', required=False)
 
     # check options
     check_parser = subparsers.add_parser('check', help='Check SmarterMail domains / users for config corruption')
@@ -77,10 +77,6 @@ def process_args():
     if not args.which:
         parser.print_help()
         sys.exit(1)
-
-    # Disable logger for some actions (if not debug mode)
-    if 'service' in args.which:
-        logger = smarterlib.init_logger(error_only=True, debug_enabled=args.d)
 
     # Sanity checking on arguments
     if 'domain' in args and args.domain:
@@ -460,13 +456,6 @@ def service_action():
     global logger, config
     sm_process = smarterlib.get_process_info('MailService.exe')
     if sm_process:
-        print('SmarterMail main process running with PID <yellow>%d</> on <yellow>%s</>'
-                                     % (sm_process['pid'], sm_process['os']))
-        print('Running since <yellow>%s</> and currently using <yellow>%s</> of system memory.' % (
-                sm_process['uptime'],
-                sm_process['memory_usage']
-        ))
-
         logger.opt(colors=True).info('SmarterMail main process running with PID <yellow>%d</> on <yellow>%s</>'
                                      % (sm_process['pid'], sm_process['os']))
         logger.opt(colors=True).info(
@@ -491,27 +480,32 @@ def service_action():
             logger.warning('Unable to get SmarterMail sub-services status through API. Ignoring subservices actions')
             return False
 
+        if args.subaction and 'status' not in args.subaction and not args.service:
+            logger.error('Missing service name for action %s' % args.subaction)
+            return False
+
         # Check if submitted service name exists
         if args.service and args.service not in services:
-            logger.error('Unknown service %s' % args.service)
+            logger.error('Unknown sub-service %s' % args.service)
             return False
 
         # Subaction given - action needed
         svc_recheck = False
-        if 'stop' in args.subaction:
-            if not services[args.service]:
-                logger.debug('Service "%s" is already stopped' % args.service)
-            else:
-                smarterlib.stop_subservice(config['api']['url'], args.service)
-                logger.debug('Service "%s" stopped successfully' % args.service)
-                svc_recheck = True
-        if 'start' in args.subaction:
-            if services[args.service]:
-                logger.debug('Service "%s" is already running' % args.service)
-            else:
-                smarterlib.start_subservice(config['api']['url'], args.service)
-                logger.debug('Service "%s" started successfully' % args.service)
-                svc_recheck = True
+        if args.service:
+            if 'stop' in args.subaction:
+                if not services[args.service]:
+                    logger.debug('Service "%s" is already stopped' % args.service)
+                else:
+                    smarterlib.stop_subservice(config['api']['url'], args.service)
+                    logger.debug('Service "%s" stopped successfully' % args.service)
+                    svc_recheck = True
+            if 'start' in args.subaction:
+                if services[args.service]:
+                    logger.debug('Service "%s" is already running' % args.service)
+                else:
+                    smarterlib.start_subservice(config['api']['url'], args.service)
+                    logger.debug('Service "%s" started successfully' % args.service)
+                    svc_recheck = True
 
         # Check again the services state
         if svc_recheck:
